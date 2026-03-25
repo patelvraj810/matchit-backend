@@ -30,9 +30,33 @@ async function loadAgentSettings(userId) {
       businessName: agent?.business_name || 'Service Business',
       services: agent?.services || [],
       serviceArea: agent?.service_area || '',
-      tone: agent?.tone || 'professional'
+      tone: agent?.tone || 'professional',
+      openingMessage: agent?.opening_message || null,
+      emergencyAvailable: agent?.emergency_available || false,
+      operatingHours: agent?.operating_hours || {},
     }
   };
+}
+
+// Helper: load RAG knowledge base documents for a given userId
+async function loadKnowledgeBase(userId) {
+  const { data: docs } = await supabase
+    .from('business_documents')
+    .select('doc_name, doc_type, raw_content')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true });
+  return docs || [];
+}
+
+// Helper: load pricebook items for a given userId
+async function loadPricebook(userId) {
+  const { data: items } = await supabase
+    .from('pricebook_items')
+    .select('name, price, unit, description, category')
+    .eq('user_id', userId)
+    .eq('active', true)
+    .order('category', { ascending: true });
+  return items || [];
 }
 
 // Helper: load conversation history from messages table
@@ -64,8 +88,12 @@ async function processInbound(leadData, userId = null) {
     throw new Error('No user found in the database — cannot process inbound lead');
   }
 
-  // Load agent settings from agents table
+  // Load agent settings + RAG context
   const { agent, agentSettings } = await loadAgentSettings(userId);
+  const [knowledgeBase, pricebook] = await Promise.all([
+    loadKnowledgeBase(userId),
+    loadPricebook(userId),
+  ]);
 
   // 1. Save lead to Supabase
   const { data: lead, error: leadError } = await supabase
@@ -135,8 +163,8 @@ async function processInbound(leadData, userId = null) {
     messageCount: 1
   };
 
-  // 4. Build prompt with qualifier mode (default for inbound)
-  const systemPrompt = buildPrompt(agentSettings, leadProfile, 'qualifier');
+  // 4. Build prompt with qualifier mode + RAG context
+  const systemPrompt = buildPrompt(agentSettings, leadProfile, 'qualifier', knowledgeBase, pricebook);
 
   // 5. Load conversation history before generating AI response
   const history = await loadConversationHistory(conversation.id);
@@ -221,8 +249,12 @@ async function processWhatsApp(senderPhone, messageText, messageId) {
     throw new Error('No user found in the database — cannot process WhatsApp message');
   }
 
-  // Load agent settings from agents table
+  // Load agent settings + RAG context
   const { agent, agentSettings } = await loadAgentSettings(userId);
+  const [knowledgeBase, pricebook] = await Promise.all([
+    loadKnowledgeBase(userId),
+    loadPricebook(userId),
+  ]);
 
   // 1. Find or create lead by phone
   const { data: existingLead } = await supabase
@@ -302,8 +334,8 @@ async function processWhatsApp(senderPhone, messageText, messageId) {
     messageCount: 1
   };
 
-  // 4. Build prompt
-  const systemPrompt = buildPrompt(agentSettings, leadProfile, 'qualifier');
+  // 4. Build prompt with RAG context
+  const systemPrompt = buildPrompt(agentSettings, leadProfile, 'qualifier', knowledgeBase, pricebook);
 
   // 5. Load conversation history before generating AI response
   const history = await loadConversationHistory(conversation.id);

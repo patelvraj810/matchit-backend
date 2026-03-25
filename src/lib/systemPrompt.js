@@ -13,7 +13,7 @@
  * Key principle: EVERY response moves toward booking, deposit, or callback.
  */
 
-function buildPrompt(agentSettings, leadProfile, mode) {
+function buildPrompt(agentSettings, leadProfile, mode, knowledgeBase = [], pricebook = []) {
   const {
     name = 'Matchit Agent',
     businessName = 'Our Company',
@@ -22,6 +22,9 @@ function buildPrompt(agentSettings, leadProfile, mode) {
     serviceArea = '',
     tone = 'professional',
     customObjections = [],
+    operatingHours = {},
+    emergencyAvailable = false,
+    openingMessage = null,
   } = agentSettings || {};
 
   const {
@@ -42,6 +45,73 @@ ${services.map(s => `  - ${s}`).join('\n')}
 ${serviceArea ? `We serve the following area: ${serviceArea}.` : ''}
 Your tone is: ${tone}.
 `.trim();
+
+  // ---------------------------------------------------------------------------
+  // SECTION 1b: BUSINESS KNOWLEDGE BASE (RAG)
+  // Injected from business_documents table — owner-provided facts.
+  // AI must treat this as ground truth. Never contradict or make up details.
+  // ---------------------------------------------------------------------------
+  let knowledgeBlock = '';
+  if (knowledgeBase.length > 0) {
+    const docSections = knowledgeBase.map(doc =>
+      `[${doc.doc_name.toUpperCase()}]\n${doc.raw_content}`
+    ).join('\n\n');
+
+    knowledgeBlock = `
+=== BUSINESS KNOWLEDGE BASE ===
+The following information was provided directly by the business owner.
+Treat it as ground truth. Use it to answer customer questions accurately.
+If a customer asks something covered here, use this info — do not guess.
+
+${docSections}
+
+=== END KNOWLEDGE BASE ===
+`.trim();
+  }
+
+  // ---------------------------------------------------------------------------
+  // SECTION 1c: PRICEBOOK (from business's Matchit pricebook)
+  // ---------------------------------------------------------------------------
+  let pricebookBlock = '';
+  if (pricebook.length > 0) {
+    const priceLines = pricebook.map(item => {
+      let line = `- ${item.name}: $${item.price}`;
+      if (item.unit) line += ` per ${item.unit}`;
+      if (item.description) line += ` (${item.description})`;
+      return line;
+    }).join('\n');
+
+    pricebookBlock = `
+=== PRICING (from pricebook) ===
+Use these exact prices when customers ask about cost.
+Never quote prices outside this list without saying "pricing may vary based on the job."
+
+${priceLines}
+
+When asked for a quote, provide a range based on the closest matching item(s) above.
+Always mention that an on-site assessment gives the most accurate price.
+`.trim();
+  }
+
+  // ---------------------------------------------------------------------------
+  // SECTION 1d: OPERATING HOURS
+  // ---------------------------------------------------------------------------
+  let hoursBlock = '';
+  const dayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const dayLabels = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+  if (operatingHours && Object.keys(operatingHours).length > 0) {
+    const lines = dayKeys.map(d => {
+      const h = operatingHours[d];
+      if (!h || !h.enabled) return `${dayLabels[d]}: Closed`;
+      return `${dayLabels[d]}: ${h.open} – ${h.close}`;
+    }).join('\n');
+
+    hoursBlock = `
+=== OPERATING HOURS ===
+${lines}
+${emergencyAvailable ? '\nEmergency service IS available 24/7 — always mention this for urgent requests.' : '\nWe do not offer 24/7 emergency service. For urgent after-hours requests, tell the customer we will call back first thing in the morning and collect their contact info.'}
+`.trim();
+  }
 
   // ---------------------------------------------------------------------------
   // SECTION 2: UNIVERSAL RULES
@@ -351,11 +421,14 @@ Go back to the mode instructions and try again.
   // ---------------------------------------------------------------------------
   return [
     identityBlock,
+    knowledgeBlock,
+    pricebookBlock,
+    hoursBlock,
     universalRules,
     modeBlock,
     channelContext,
     closingDirective,
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 module.exports = { buildPrompt };

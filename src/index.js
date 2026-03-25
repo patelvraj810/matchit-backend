@@ -10,6 +10,7 @@ const jobsRoutes = require('./routes/jobs');
 const analyticsRoutes = require('./routes/analytics');
 const channelsRoutes = require('./routes/channels');
 const pricebookRoutes = require('./routes/pricebook');
+const onboardingRoutes = require('./routes/onboarding');
 const authenticate = require('./middleware/authenticate');
 const supabase = require('./lib/db');
 const { restoreReminders } = require('./services/reminders');
@@ -34,6 +35,7 @@ app.use('/api/jobs', jobsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/channels', channelsRoutes);
 app.use('/api/pricebook', pricebookRoutes);
+app.use('/api/onboarding', onboardingRoutes);
 
 // POST /api/find/request - public service request form (no auth)
 app.post('/api/find/request', async (req, res) => {
