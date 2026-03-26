@@ -11,15 +11,24 @@ const analyticsRoutes = require('./routes/analytics');
 const channelsRoutes = require('./routes/channels');
 const pricebookRoutes = require('./routes/pricebook');
 const onboardingRoutes = require('./routes/onboarding');
+const estimatesRoutes = require('./routes/estimates');
+const teamRoutes = require('./routes/team');
+const campaignsRoutes = require('./routes/campaigns');
+const integrationsRoutes = require('./routes/integrations');
+const stripeWebhookRoutes = require('./routes/stripe-webhook');
 const authenticate = require('./middleware/authenticate');
 const supabase = require('./lib/db');
 const { restoreReminders } = require('./services/reminders');
 const { startMorningBriefing } = require('./services/morningBriefing');
 const { startEndOfDaySummary } = require('./services/endOfDaySummary');
 const { startInvoiceReminderCheck } = require('./services/invoices');
+const { startCampaignRunner } = require('./services/campaignRunner');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Stripe webhook MUST be mounted before express.json() — raw body required for sig verification
+app.use('/webhook/stripe', stripeWebhookRoutes);
 
 app.use(express.json());
 app.use(cors({
@@ -36,6 +45,10 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/channels', channelsRoutes);
 app.use('/api/pricebook', pricebookRoutes);
 app.use('/api/onboarding', onboardingRoutes);
+app.use('/api/estimates', estimatesRoutes);
+app.use('/api/team', teamRoutes);
+app.use('/api/campaigns', campaignsRoutes);
+app.use('/api/integrations', integrationsRoutes);
 
 // POST /api/find/request - public service request form (no auth)
 app.post('/api/find/request', async (req, res) => {
@@ -105,11 +118,11 @@ app.post('/api/find/request', async (req, res) => {
   res.json({ success: true, requestId: data.id, matchCount });
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'matchit-backend', version: '1.0.0', timestamp: new Date().toISOString() });
 });
 
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.json({ status: 'ok', service: 'matchit-backend' });
 });
 
@@ -227,6 +240,40 @@ app.get('/api/messages/:conversationId', authenticate, async (req, res) => {
   res.json(data || []);
 });
 
+// POST /api/messages/:conversationId — manually send an outbound message from the dashboard
+app.post('/api/messages/:conversationId', authenticate, async (req, res) => {
+  const { content } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: 'content is required' });
+
+  const { data: conv, error: convError } = await supabase
+    .from('conversations')
+    .select('id, lead_id, channel')
+    .eq('id', req.params.conversationId)
+    .eq('user_id', req.user.id)
+    .single();
+
+  if (convError || !conv) return res.status(403).json({ error: 'Conversation not found' });
+
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({
+      user_id: req.user.id,
+      conversation_id: conv.id,
+      lead_id: conv.lead_id || null,
+      direction: 'outbound',
+      sender_type: 'owner',
+      sender_name: req.user.name || 'Business',
+      content: content.trim(),
+      channel: conv.channel || 'dashboard',
+      status: 'sent',
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(data);
+});
+
 app.listen(PORT, async () => {
   console.log(`🚀 Matchit backend running on port ${PORT}`);
   
@@ -238,6 +285,7 @@ app.listen(PORT, async () => {
   startMorningBriefing();
   startEndOfDaySummary();
   startInvoiceReminderCheck();
-  
+  startCampaignRunner();
+
   console.log('✅ All cron jobs initialized');
 });

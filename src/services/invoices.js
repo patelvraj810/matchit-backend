@@ -65,7 +65,7 @@ async function sendInvoice(invoiceId, customerPhone, customerEmail) {
     // 1. Fetch invoice from DB
     const { data: invoice, error: fetchError } = await supabase
       .from('invoices')
-      .select('*, leads(*), users(*)')
+      .select('*, leads(*), users(*), jobs(id, customer_name, customer_phone, customer_email, job_description)')
       .eq('id', invoiceId)
       .single();
 
@@ -81,20 +81,24 @@ async function sendInvoice(invoiceId, customerPhone, customerEmail) {
         invoiceId: invoice.id,
         amount: invoice.total,
         customerEmail: customerEmail,
-        description: invoice.job_description
+        description: invoice.job_description,
+        metadata: { invoice_id: invoice.id, kind: 'invoice' },
       });
-      
+
       paymentLink = session.url || `https://checkout.stripe.com/pay/${invoice.id}`;
-      
-      // Update invoice with payment link
+
+      // Store both the payment link and the session ID for webhook reconciliation
       await supabase
         .from('invoices')
-        .update({ stripe_payment_link: paymentLink })
+        .update({
+          stripe_payment_link: paymentLink,
+          stripe_checkout_session_id: session.id || null,
+        })
         .eq('id', invoiceId);
     }
 
     // 3. Send WhatsApp message
-    const customerName = invoice.leads?.customer_name || 'there';
+    const customerName = invoice.customer_name || invoice.jobs?.customer_name || invoice.leads?.contact_name || 'there';
     const businessName = invoice.users?.business_name || invoice.users?.name || 'our business';
     
     const whatsAppMessage = `Hi ${customerName}, here is your invoice for ${invoice.job_description} — $${invoice.total.toFixed(2)}. Pay securely here: ${paymentLink}\n\nThank you for choosing ${businessName}! 🙌`;
@@ -108,7 +112,7 @@ async function sendInvoice(invoiceId, customerPhone, customerEmail) {
     const { data: updatedInvoice, error: updateError } = await supabase
       .from('invoices')
       .update({ 
-        status: 'sent',
+        status: invoice.status === 'paid' ? 'paid' : 'sent',
         sent_at: new Date().toISOString(),
         stripe_payment_link: paymentLink
       })
@@ -167,8 +171,8 @@ async function checkUnpaidInvoices() {
       const sentDate = new Date(invoice.sent_at || invoice.created_at);
       const daysSinceSent = Math.floor((now - sentDate) / (1000 * 60 * 60 * 24));
       
-      const customerName = invoice.leads?.customer_name || 'there';
-      const customerPhone = invoice.leads?.phone || invoice.users?.phone;
+      const customerName = invoice.customer_name || invoice.jobs?.customer_name || invoice.leads?.contact_name || 'there';
+      const customerPhone = invoice.customer_phone || invoice.jobs?.customer_phone || invoice.leads?.contact_phone || null;
       const ownerPhone = invoice.users?.phone;
       const businessName = invoice.users?.business_name || invoice.users?.name || 'our business';
 
@@ -242,12 +246,27 @@ async function checkUnpaidInvoices() {
  * @returns {Promise<Object>}
  */
 async function markInvoicePaid(invoiceId, stripePaymentIntentId = null) {
+  const { data: existing, error: existingError } = await supabase
+    .from('invoices')
+    .select('id, status, paid_at, stripe_payment_intent_id')
+    .eq('id', invoiceId)
+    .single();
+
+  if (existingError || !existing) {
+    return { success: false, error: 'Invoice not found' };
+  }
+
+  if (existing.status === 'paid') {
+    return { success: true, invoice: existing, alreadyPaid: true };
+  }
+
   const { data, error } = await supabase
     .from('invoices')
     .update({ 
       status: 'paid',
       paid_at: new Date().toISOString(),
-      stripe_payment_intent_id: stripePaymentIntentId
+      stripe_payment_intent_id: stripePaymentIntentId || existing.stripe_payment_intent_id || null,
+      updated_at: new Date().toISOString(),
     })
     .eq('id', invoiceId)
     .select()

@@ -14,9 +14,22 @@ const STRIPE_API = 'api.stripe.com';
  * @param {number} options.amount - Amount in dollars
  * @param {string} options.customerEmail - Customer email
  * @param {string} options.description - Invoice/job description
+ * @param {Object} options.metadata - Optional metadata object
+ * @param {string} options.successUrl - Optional redirect URL on success
+ * @param {string} options.cancelUrl - Optional redirect URL on cancel
+ * @param {string} options.currency - Optional currency code
  * @returns {Promise<Object>} Stripe checkout session
  */
-async function createStripeCheckoutSession({ invoiceId, amount, customerEmail, description }) {
+async function createStripeCheckoutSession({
+  invoiceId,
+  amount,
+  customerEmail,
+  description,
+  metadata = {},
+  successUrl,
+  cancelUrl,
+  currency = 'usd',
+}) {
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   
   if (!stripeKey) {
@@ -26,18 +39,24 @@ async function createStripeCheckoutSession({ invoiceId, amount, customerEmail, d
 
   // Amount in cents
   const amountCents = Math.round(amount * 100);
+  const mergedMetadata = { ...metadata, ...(invoiceId ? { invoice_id: invoiceId } : {}) };
   
-  const sessionData = new URLSearchParams({
+  const params = new URLSearchParams({
     'mode': 'payment',
-    'success_url': `${process.env.APP_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-    'cancel_url': `${process.env.APP_URL || 'http://localhost:5173'}/payment-cancelled`,
-    'line_items[0][price_data][currency]': 'usd',
+    'success_url': successUrl || `${process.env.APP_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+    'cancel_url': cancelUrl || `${process.env.APP_URL || 'http://localhost:5173'}/payment-cancelled`,
+    'line_items[0][price_data][currency]': currency,
     'line_items[0][price_data][unit_amount]': amountCents.toString(),
     'line_items[0][price_data][product_data][name]': description || 'Invoice Payment',
     'line_items[0][quantity]': '1',
-    'metadata[invoice_id]': invoiceId,
     ...(customerEmail && { 'customer_email': customerEmail }),
-  }).toString();
+  });
+
+  Object.entries(mergedMetadata).forEach(([key, value]) => {
+    if (value != null) params.set(`metadata[${key}]`, String(value));
+  });
+
+  const sessionData = params.toString();
 
   const options = {
     hostname: STRIPE_API,
@@ -49,7 +68,7 @@ async function createStripeCheckoutSession({ invoiceId, amount, customerEmail, d
     }
   };
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -89,25 +108,40 @@ function verifyWebhookSignature(payload, signature, endpointSecret) {
     const crypto = require('crypto');
     const elements = signature.split(',');
     const signatureMap = {};
-    
+
     for (const element of elements) {
       const [key, value] = element.split('=');
-      signatureMap[key] = value;
+      if (key && value) signatureMap[key] = value;
     }
-    
+
     const timestamp = signatureMap['t'];
     const v1Signature = signatureMap['v1'];
-    
+
+    if (!timestamp || !v1Signature) return null;
+
+    // Reject events older than 5 minutes to prevent replay attacks
+    const eventAge = Math.abs(Date.now() / 1000 - parseInt(timestamp, 10));
+    if (eventAge > 300) {
+      console.warn('[Stripe] Webhook event is too old (replay protection):', eventAge, 's');
+      return null;
+    }
+
     const signedPayload = `${timestamp}.${payload}`;
     const expectedSignature = crypto
       .createHmac('sha256', endpointSecret)
-      .update(signedPayload)
+      .update(signedPayload, 'utf8')
       .digest('hex');
-    
-    if (crypto.timingSafeEqual(Buffer.from(v1Signature), Buffer.from(expectedSignature))) {
+
+    // timingSafeEqual requires equal-length buffers — compare hex strings
+    const v1Buf  = Buffer.from(v1Signature, 'hex');
+    const expBuf = Buffer.from(expectedSignature, 'hex');
+
+    if (v1Buf.length !== expBuf.length) return null;
+
+    if (crypto.timingSafeEqual(v1Buf, expBuf)) {
       return JSON.parse(payload);
     }
-    
+
     return null;
   } catch (error) {
     console.error('[Stripe] Signature verification failed:', error);

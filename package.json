@@ -1,26 +1,8 @@
 {
-  "name": "leadclaw-backend",
+  "name": "eleven-mission-control",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
-    "@supabase/supabase-js": "^2.99.3",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.6",
-    "dotenv": "^17.3.1",
-    "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "node-cron": "^4.2.1",
-    "resend": "^6.9.4",
-    "twilio": "^5.13.0"
+    "convex": "^1.0.0",
+    "dotenv": "^17.3.1"
   }
 }
